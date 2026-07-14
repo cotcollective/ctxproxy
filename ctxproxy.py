@@ -12,6 +12,51 @@ CACHE_DB = Path("/tmp/ctxproxy_cache.db")
 CONTEXT_LIMIT = 505_000
 WARN_THRESHOLD = 0.80
 CRIT_THRESHOLD = 0.95
+COMPRESS_AT_PCT = 0.70
+PROTECT_LAST_N = 10
+
+
+
+import re
+
+
+def compress_messages(messages, estimated, limit, protect_last_n=10):
+    """Adaptive sliding window compression — keeps system + last N + similar messages."""
+    if not messages or estimated < limit * 0.70:
+        return messages, "none", estimated
+    system_msgs = [m for m in messages if m.get("role") == "system"]
+    non_system = [m for m in messages if m.get("role") != "system"]
+    if len(non_system) <= protect_last_n + 2:
+        return messages, "none", estimated
+    tail = non_system[-protect_last_n:]
+    last_user = ""
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            last_user = m.get("content", "")
+            if isinstance(last_user, str):
+                break
+    similar = set()
+    if last_user:
+        last_words = set(re.findall(r'\w{4,}', last_user.lower()))
+        for i, m in enumerate(non_system[:-protect_last_n]):
+            content = m.get("content", "")
+            if isinstance(content, str):
+                words = set(re.findall(r'\w{4,}', content.lower()))
+                if len(last_words & words) >= 2:
+                    similar.add(i)
+    compressed = list(system_msgs)
+    for i in sorted(similar):
+        if i < len(non_system) - protect_last_n:
+            compressed.append(non_system[i])
+    removed = len(non_system) - len(tail) - len(similar)
+    if removed > 3:
+        compressed.append({
+            "role": "system",
+            "content": f"[CONTEXT COMPRESSION: {removed} earlier messages removed. Only last {protect_last_n} messages and relevant ones preserved.]"
+        })
+    compressed.extend(tail)
+    new_est = estimate_tokens(compressed)
+    return compressed, "sliding_window", new_est
 
 
 def estimate_tokens(messages, tools=None):
@@ -123,9 +168,21 @@ class CtxProxy:
         except json.JSONDecodeError:
             return web.json_response({"error": "Invalid JSON"}, status=400)
 
-        estimated = estimate_tokens(body.get('messages',[]), body.get('tools'))
+        messages = body.get('messages', [])
+        tools = body.get('tools')
+        estimated = estimate_tokens(messages, tools)
         log.info("REQUEST model=%s messages=%d estimated=%d tokens",
                  body.get('model','?'), len(body.get('messages',[])), estimated)
+
+        compressed = False
+        if estimated > CONTEXT_LIMIT * COMPRESS_AT_PCT:
+            comp_msgs, strategy, new_est = compress_messages(messages, estimated, CONTEXT_LIMIT)
+            if strategy != "none":
+                log.info("COMPRESSED: %d->%d tokens (%s)", estimated, new_est, strategy)
+                messages = comp_msgs
+                estimated = new_est
+                compressed = True
+                body["messages"] = messages
 
         if estimated > CONTEXT_LIMIT:
             pct = estimated / CONTEXT_LIMIT * 100
@@ -137,7 +194,7 @@ class CtxProxy:
                 status=400,
             )
 
-        cached = self.cache.get(body.get('model','?'), body.get('messages',[]), body.get('tools'))
+        cached = self.cache.get(body.get('model','?'), messages, tools)
         if cached:
             return web.json_response(cached)
 
@@ -162,7 +219,7 @@ class CtxProxy:
                         pct = pt / CONTEXT_LIMIT * 100
                         log.warning("HIGH CONTEXT: %d tokens (%.0f%%)", pt, pct)
                         self.cache.log_event("high_context", f"{pt}/{CONTEXT_LIMIT} ({pct:.0f}%)")
-                    self.cache.set(body.get('model','?'), body.get('messages',[]), body.get('tools'), data)
+                    self.cache.set(body.get('model','?'), messages, tools, data)
                 return web.json_response(data, status=resp.status)
 
     async def start(self):
