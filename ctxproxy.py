@@ -10,6 +10,31 @@ DEFAULT_PORT = 11438
 DEFAULT_UPSTREAM = "https://ollama.com/v1"
 CACHE_DB = Path("/tmp/ctxproxy_cache.db")
 CONTEXT_LIMIT = 505_000
+WARN_THRESHOLD = 0.80
+CRIT_THRESHOLD = 0.95
+
+
+def estimate_tokens(messages, tools=None):
+    """Rough token estimation for structured content."""
+    total = 0
+    for msg in (messages or []):
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            specials = sum(1 for c in content if c in "{}[]()<>\"'=;:/\\")
+            ratio = 2.5 if specials > len(content) * 0.3 else 4.0
+            total += int(len(content) / ratio)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and "text" in block:
+                    total += int(len(block["text"]) / 4)
+        total += 4
+    if tools:
+        total += len(tools) * 15
+    total += 20
+    return total
+
+
+CONTEXT_LIMIT = 505_000
 
 logging.basicConfig(level=logging.INFO, format="[ctxproxy] %(levelname)s %(message)s")
 log = logging.getLogger("ctxproxy")
@@ -22,6 +47,8 @@ class ResponseCache:
         conn = sqlite3.connect(str(db_path))
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("CREATE TABLE IF NOT EXISTS response_cache (key TEXT PRIMARY KEY, response TEXT NOT NULL, created_at REAL NOT NULL, ttl REAL NOT NULL DEFAULT 300)")
+        conn.execute("CREATE TABLE IF NOT EXISTS token_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL NOT NULL, model TEXT NOT NULL, prompt_tokens INTEGER DEFAULT 0, completion_tokens INTEGER DEFAULT 0, total_tokens INTEGER DEFAULT 0, estimated_tokens INTEGER DEFAULT 0)")
+        conn.execute("CREATE TABLE IF NOT EXISTS cache_stats (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL NOT NULL, event TEXT NOT NULL, detail TEXT DEFAULT '')")
         conn.commit()
         conn.close()
 
@@ -31,7 +58,7 @@ class ResponseCache:
 
     def get(self, model, messages, tools):
         key = self._make_key(model, messages, tools)
-        conn = sqlite3.connect(str(self.db_path))
+        conn = sqlite3.connect(str(self.cache.db_path))
         row = conn.execute("SELECT response, created_at, ttl FROM response_cache WHERE key = ?", (key,)).fetchone()
         conn.close()
         if row:
@@ -43,11 +70,24 @@ class ResponseCache:
 
     def set(self, model, messages, tools, response, ttl=120):
         key = self._make_key(model, messages, tools)
-        conn = sqlite3.connect(str(self.db_path))
+        conn = sqlite3.connect(str(self.cache.db_path))
         conn.execute("INSERT OR REPLACE INTO response_cache VALUES (?, ?, ?, ?)", (key, json.dumps(response), time.time(), ttl))
         conn.commit()
         conn.close()
         log.info("CACHE SET key=%s...", key[:12])
+
+    def log_usage(self, model, prompt_tokens, completion_tokens, estimated):
+        conn = sqlite3.connect(str(self.cache.db_path))
+        conn.execute("INSERT INTO token_usage (timestamp, model, prompt_tokens, completion_tokens, total_tokens, estimated_tokens) VALUES (?, ?, ?, ?, ?, ?)",
+                     (time.time(), model, prompt_tokens, completion_tokens, prompt_tokens + completion_tokens, estimated))
+        conn.commit()
+        conn.close()
+
+    def log_event(self, event, detail=""):
+        conn = sqlite3.connect(str(self.cache.db_path))
+        conn.execute("INSERT INTO cache_stats (timestamp, event, detail) VALUES (?, ?, ?)", (time.time(), event, detail))
+        conn.commit()
+        conn.close()
 
 class CtxProxy:
     def __init__(self, upstream, port):
@@ -57,18 +97,45 @@ class CtxProxy:
         self.cache = ResponseCache(CACHE_DB)
         self.app.router.add_post("/v1/chat/completions", self.handle_chat)
         self.app.router.add_get("/health", self.handle_health)
+        self.app.router.add_get("/stats", self.handle_stats)
 
     def _get_key(self):
         return os.environ.get("OLLAMA_API_KEY", "")
 
     async def handle_health(self, request):
-        return web.json_response({"status": "ok"})
+        return web.json_response({"status": "ok", "cache_db": str(CACHE_DB)})
+
+    async def handle_stats(self, request):
+        conn = sqlite3.connect(str(self.cache.db_path))
+        usage = conn.execute("SELECT COUNT(*), COALESCE(SUM(total_tokens),0), COALESCE(SUM(estimated_tokens),0) FROM token_usage").fetchone()
+        cache_count = conn.execute("SELECT COUNT(*) FROM response_cache").fetchone()[0]
+        recent = conn.execute("SELECT event, detail, timestamp FROM cache_stats ORDER BY id DESC LIMIT 10").fetchall()
+        conn.close()
+        return web.json_response({
+            "calls": usage[0], "total_tokens": usage[1], "estimated_tokens": usage[2],
+            "cache_entries": cache_count,
+            "recent_events": [{"event": e[0], "detail": e[1], "time": e[2]} for e in recent],
+        })
 
     async def handle_chat(self, request):
         try:
             body = await request.json()
         except json.JSONDecodeError:
             return web.json_response({"error": "Invalid JSON"}, status=400)
+
+        estimated = estimate_tokens(body.get('messages',[]), body.get('tools'))
+        log.info("REQUEST model=%s messages=%d estimated=%d tokens",
+                 body.get('model','?'), len(body.get('messages',[])), estimated)
+
+        if estimated > CONTEXT_LIMIT:
+            pct = estimated / CONTEXT_LIMIT * 100
+            detail = f"estimated={estimated} limit={CONTEXT_LIMIT} ({pct:.0f}%)"
+            log.warning("CONTEXT OVERFLOW: %s", detail)
+            self.cache.log_event("context_overflow", detail)
+            return web.json_response(
+                {"error": f"Bad Request (ref: ctxproxy-{hashlib.sha256(detail.encode()).hexdigest()[:12]})"},
+                status=400,
+            )
 
         cached = self.cache.get(body.get('model','?'), body.get('messages',[]), body.get('tools'))
         if cached:
@@ -87,6 +154,14 @@ class CtxProxy:
             ) as resp:
                 data = await resp.json()
                 if resp.status == 200:
+                    usage = data.get("usage", {})
+                    pt = usage.get("prompt_tokens", 0)
+                    ct = usage.get("completion_tokens", 0)
+                    self.cache.log_usage(body.get('model','?'), pt, ct, estimated)
+                    if pt > CONTEXT_LIMIT * WARN_THRESHOLD:
+                        pct = pt / CONTEXT_LIMIT * 100
+                        log.warning("HIGH CONTEXT: %d tokens (%.0f%%)", pt, pct)
+                        self.cache.log_event("high_context", f"{pt}/{CONTEXT_LIMIT} ({pct:.0f}%)")
                     self.cache.set(body.get('model','?'), body.get('messages',[]), body.get('tools'), data)
                 return web.json_response(data, status=resp.status)
 
