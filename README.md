@@ -1,6 +1,6 @@
 # ctxproxy — Context-Aware Proxy for Ollama Cloud
 
-A lightweight HTTP proxy that sits between any OpenAI-compatible client and Ollama Cloud. Adds **response caching**, **token monitoring**, **adaptive compression**, and **prefix caching** — features Ollama Cloud's API doesn't provide natively.
+A lightweight HTTP proxy that sits between any OpenAI-compatible client and Ollama Cloud. Adds **response caching**, **token monitoring**, **adaptive compression**, and **prefix caching** — features Ollama Cloud's OpenAI-compatible API doesn't provide natively.
 
 ```
 Client → ctxproxy:11438 → Ollama Cloud:443
@@ -37,19 +37,42 @@ Compressions triggered: 1
 
 The compression saved a session that would have hit the 505K limit — it reduced 41 messages to 12 (70% reduction) while preserving the system prompt, last 10 messages, and semantically relevant context.
 
+## Tests
+
+```bash
+python tests/test_cache.py
+```
+
+8 tests covering: cache hit/miss/TTL, token estimation (text + code), compression (noop + sliding window), prefix hash uniqueness.
+
+```
+[ctxproxy] INFO CACHE SET key=3966fac282db...
+[ctxproxy] INFO CACHE HIT key=3966fac282db...
+  PASS test_cache_hit
+  PASS test_cache_miss
+  PASS test_cache_ttl
+  PASS test_estimate_tokens (26)
+  PASS test_estimate_tokens_code (33)
+  PASS test_compress_noop
+  PASS test_compress_sliding_window (41->12)
+  PASS test_prefix_hash
+
+8/8 tests passed
+```
+
 ## Bugs Found & Fixed During Development
 
-### 1. SQLite schema drift (v1 → v2)
-The initial cache schema didn't have a `compressed` column. When the feature was added later, the old DB file caused a 500 error. **Fix:** delete and recreate the DB, or use `CREATE TABLE IF NOT EXISTS` with migration checks.
+### 1. SQLite schema drift
+Adding a `compressed` column to an existing DB caused a 500 error. Fixed with `CREATE TABLE IF NOT EXISTS` and migration checks.
 
-### 2. `self.cache.db_path` vs `self.db_path` (v2)
-ResponseCache methods referenced `self.cache.db_path` instead of `self.db_path` — a copy-paste error from when the cache was a property of CtxProxy. **Fix:** use `self.db_path` directly since ResponseCache is a standalone class.
+### 2. `self.cache.db_path` vs `self.db_path`
+Copy-paste error from when ResponseCache was a property of CtxProxy. ResponseCache methods referenced `self.cache.db_path` instead of `self.db_path`. Fixed by using `self.db_path` directly.
 
-### 3. Streaming responses break `await resp.json()` (v3)
-The initial implementation always called `resp.json()`, which fails on SSE streams with "Attempt to decode JSON with unexpected mimetype: text/event-stream". **Fix:** check `body.get("stream", False)` before deciding how to read the response.
+### 3. Streaming breaks `resp.json()`
+SSE streams return `text/event-stream` — calling `resp.json()` fails with "Attempt to decode JSON with unexpected mimetype". Fixed by checking `body.get("stream", False)` before deciding how to read the response.
 
-### 4. Port collision with local Ollama (v4)
-Port 11435 was already used by a local Ollama GPU instance. **Fix:** default to 11438, document the collision.
+### 4. Port collision with local Ollama
+Port 11435 was already used by a local Ollama GPU instance. Default changed to 11438.
 
 ## Features
 
@@ -75,14 +98,6 @@ python ctxproxy.py [--port 11438] [--upstream https://ollama.com/v1]
 | `OLLAMA_API_KEY` | — | Ollama Cloud API key (or `/tmp/ollama_key.txt` fallback) |
 | `CTXPROXY_CACHE` | `/tmp/ctxproxy_cache.db` | SQLite cache path |
 | `CTXPROXY_LOG` | `INFO` | Log level |
-
-## Tests
-
-```bash
-python tests/test_cache.py
-```
-
-8 tests covering: cache hit/miss/TTL, token estimation (text + code), compression (noop + sliding window), prefix hash uniqueness.
 
 ## Architecture
 
