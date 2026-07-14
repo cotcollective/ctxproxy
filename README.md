@@ -35,7 +35,7 @@ Prefix entries: 3
 Compressions triggered: 1
 ```
 
-The compression saved a session that would have hit the 505K limit — it reduced 41 messages to 12 (70% reduction) while preserving the system prompt, last 10 messages, and semantically relevant context.
+The compression saved a session that would have hit the 505K limit — it reduced 41 messages to 12 (70% reduction) while preserving the system prompt, last 10 messages, and keyword-relevant context.
 
 ## Tests
 
@@ -80,7 +80,7 @@ Port 11435 was already used by a local Ollama GPU instance. Default changed to 1
 |---------|-------------|
 | **Response caching** | Exact-match cache with configurable TTL. SQLite-backed, survives restarts. |
 | **Token monitoring** | Tracks every request. Warns at 80% of context limit, critical at 95%. Returns a proper 400 before Ollama Cloud's hard limit. |
-| **Adaptive compression** | When estimated tokens exceed 70% of the limit, automatically compresses: keeps system message + last N messages + semantically similar messages (keyword overlap). |
+| **Adaptive compression** | When estimated tokens exceed 70% of the limit, automatically compresses: keeps system message + last N messages + keyword-relevant messages (word overlap). |
 | **Prefix caching** | Content-addressed KV cache for the static prefix (system + initial exchanges). SHA-256 hashing. |
 | **Streaming support** | Passes SSE streams through transparently, extracting usage data from `data:` lines. |
 | **Stats endpoint** | `GET /stats` returns call count, total tokens, cache entries, prefix entries, compression count. |

@@ -69,11 +69,42 @@ def test_prefix_hash():
     assert h1 != h3, "Different prefixes should differ"
     print("  PASS test_prefix_hash")
 
+def test_sse_stream_parsing():
+    """Simulate SSE stream parsing — the bug that broke resp.json()."""
+    # Simulate what the proxy receives from Ollama Cloud
+    chunks = [
+        b'data: {"choices":[{"delta":{"content":"hello"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}\n\n',
+        b'data: {"choices":[{"delta":{"content":" world"}}]}\n\n',
+        b'data: [DONE]\n\n',
+    ]
+    full = b"".join(chunks)
+    lines = full.decode("utf-8", errors="replace").split("\n")
+
+    pt, ct = 0, 0
+    content = ""
+    for line in lines:
+        if line.startswith("data: ") and line != "data: [DONE]":
+            try:
+                data = json.loads(line[6:])
+                delta = data.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                content += delta
+                usage = data.get("usage", {})
+                if usage:
+                    pt = usage.get("prompt_tokens", pt)
+                    ct = usage.get("completion_tokens", ct)
+            except json.JSONDecodeError:
+                pass
+
+    assert content == "hello world", f"Expected 'hello world', got {content!r}"
+    assert pt == 10, f"Expected prompt_tokens=10, got {pt}"
+    assert ct == 5, f"Expected completion_tokens=5, got {ct}"
+    print(f"  PASS test_sse_stream_parsing (content={content!r}, pt={pt}, ct={ct})")
+
 if __name__ == "__main__":
     tests = [test_cache_hit, test_cache_miss, test_cache_ttl,
              test_estimate_tokens, test_estimate_tokens_code,
              test_compress_noop, test_compress_sliding_window,
-             test_prefix_hash]
+             test_prefix_hash, test_sse_stream_parsing]
     passed = 0
     for t in tests:
         try:

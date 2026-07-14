@@ -50,7 +50,7 @@ def estimate_tokens(messages, tools=None):
 
 # ── Adaptive compression ────────────────────────────────────────────────
 def compress_messages(messages, estimated, limit, protect_last_n=10):
-    """Adaptive sliding window — keeps system + last N + semantically similar messages."""
+    """Adaptive sliding window — keeps system + last N + keyword-relevant messages."""
     if not messages or estimated < limit * 0.70:
         return messages, "none", estimated
     system_msgs = [m for m in messages if m.get("role") == "system"]
