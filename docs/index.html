@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ctxproxy — Context-Aware Proxy for Ollama Cloud</title>
+    <meta name="description" content="Lightweight HTTP proxy adding response caching, token monitoring, adaptive compression, and prefix caching to Ollama Cloud's OpenAI-compatible API.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0a0a0f;
+            --surface: #12121a;
+            --border: #1e1e2e;
+            --text: #e2e2e8;
+            --text-muted: #8888a0;
+            --accent: #6c5ce7;
+            --accent-glow: rgba(108, 92, 231, 0.15);
+            --green: #00d68f;
+            --orange: #ff9f43;
+            --red: #ee5a24;
+            --radius: 12px;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            -webkit-font-smoothing: antialiased;
+        }
+        .container { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+
+        .hero {
+            padding: 100px 0 80px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: 50%;
+            width: 800px;
+            height: 800px;
+            transform: translate(-50%, -30%);
+            background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%);
+            pointer-events: none;
+        }
+        .hero-badge {
+            display: inline-block;
+            padding: 6px 16px;
+            border-radius: 100px;
+            background: var(--accent-glow);
+            border: 1px solid var(--accent);
+            color: var(--accent);
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 24px;
+            letter-spacing: 0.5px;
+        }
+        .hero h1 {
+            font-size: clamp(40px, 8vw, 72px);
+            font-weight: 800;
+            letter-spacing: -2px;
+            line-height: 1.1;
+            margin-bottom: 20px;
+            position: relative;
+        }
+        .hero h1 span { color: var(--accent); }
+        .hero p {
+            font-size: 18px;
+            color: var(--text-muted);
+            max-width: 640px;
+            margin: 0 auto 40px;
+            position: relative;
+        }
+        .hero-actions {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            flex-wrap: wrap;
+            position: relative;
+        }
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 28px;
+            border-radius: var(--radius);
+            font-size: 15px;
+            font-weight: 600;
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+        .btn-primary { background: var(--accent); color: #fff; }
+        .btn-primary:hover { background: #7c6df7; transform: translateY(-1px); }
+        .btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+        .btn-secondary:hover { border-color: var(--accent); transform: translateY(-1px); }
+
+        section { padding: 80px 0; }
+        section h2 { font-size: 28px; font-weight: 700; margin-bottom: 40px; text-align: center; }
+
+        .arch-diagram {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 40px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 14px;
+            line-height: 2;
+            overflow-x: auto;
+        }
+        .arch-diagram .arrow { color: var(--text-muted); }
+        .arch-diagram .highlight { color: var(--accent); font-weight: 600; }
+        .arch-diagram .green { color: var(--green); }
+        .arch-diagram .orange { color: var(--orange); }
+        .arch-diagram .comment { color: #6a6a8a; }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+        }
+        .feature-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 28px;
+            transition: border-color 0.2s;
+        }
+        .feature-card:hover { border-color: var(--accent); }
+        .feature-card .icon { font-size: 28px; margin-bottom: 12px; display: block; }
+        .feature-card h3 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
+        .feature-card p { font-size: 14px; color: var(--text-muted); line-height: 1.5; }
+
+        .code-block {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 24px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            line-height: 1.8;
+            overflow-x: auto;
+            margin-bottom: 16px;
+        }
+        .code-block .comment { color: #6a6a8a; }
+        .code-block .keyword { color: var(--accent); }
+        .code-block .string { color: var(--green); }
+        .code-block .var { color: var(--orange); }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            text-align: center;
+        }
+        .stat-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 28px;
+        }
+        .stat-card .number { font-size: 36px; font-weight: 800; color: var(--accent); }
+        .stat-card .label { font-size: 14px; color: var(--text-muted); margin-top: 4px; }
+
+        .bug-list { max-width: 700px; margin: 0 auto; }
+        .bug-item {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 20px;
+            margin-bottom: 12px;
+        }
+        .bug-item h4 { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+        .bug-item p { font-size: 13px; color: var(--text-muted); }
+
+        .footer {
+            padding: 40px 0;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 14px;
+            border-top: 1px solid var(--border);
+        }
+        .footer a { color: var(--accent); text-decoration: none; }
+        .footer a:hover { text-decoration: underline; }
+
+        @media (max-width: 640px) {
+            .hero { padding: 60px 0 40px; }
+            .arch-diagram { padding: 20px; font-size: 12px; }
+        }
+    </style>
+</head>
+<body>
+    <section class="hero">
+        <div class="container">
+            <div class="hero-badge">v1.0.0 · MIT License · 8 tests</div>
+            <h1>ctx<span>proxy</span></h1>
+            <p>Context-aware proxy for Ollama Cloud — response caching, token monitoring, adaptive compression, and prefix caching for OpenAI-compatible APIs.</p>
+            <div class="hero-actions">
+                <a href="https://github.com/cotcollective/ctxproxy" class="btn btn-primary">GitHub →</a>
+                <a href="#quickstart" class="btn btn-secondary">Quick Start</a>
+            </div>
+        </div>
+    </section>
+
+    <section>
+        <div class="container">
+            <h2>Architecture</h2>
+            <div class="arch-diagram">
+                <span class="highlight">Client</span> (Hermes, Claude Code, Codex, ...)<br>
+                <span class="arrow">  │</span><br>
+                <span class="arrow">  ▼</span><br>
+                <span class="highlight">ctxproxy</span><span class="arrow">:11438</span><br>
+                <span class="arrow">  │</span><br>
+                <span class="arrow">  ├──</span> <span class="green">Response cache</span> (exact match, TTL 120s)<br>
+                <span class="arrow">  ├──</span> <span class="orange">Token monitoring</span> (warn at 80%, critical at 95%)<br>
+                <span class="arrow">  ├──</span> <span class="green">Adaptive compression</span> (sliding window + similarity)<br>
+                <span class="arrow">  └──</span> <span class="orange">Prefix caching</span> (content-addressed KV, SHA-256)<br>
+                <span class="arrow">  │</span><br>
+                <span class="arrow">  ▼</span><br>
+                <span class="highlight">Ollama Cloud</span><span class="arrow">:443</span><br>
+                <span class="comment">  ──────────────────────────────────</span><br>
+                <span class="comment">  ~505K token limit (infrastructure)</span><br>
+                <span class="comment">  No native prompt caching</span><br>
+                <span class="comment">  No context monitoring</span>
+            </div>
+        </div>
+    </section>
+
+    <section>
+        <div class="container">
+            <h2>Features</h2>
+            <div class="features-grid">
+                <div class="feature-card">
+                    <span class="icon">⚡</span>
+                    <h3>Response Caching</h3>
+                    <p>Exact-match cache with configurable TTL. SQLite-backed, survives restarts. Avoids re-calling the API for identical requests.</p>
+                </div>
+                <div class="feature-card">
+                    <span class="icon">📊</span>
+                    <h3>Token Monitoring</h3>
+                    <p>Tracks every request's token usage. Warns at 80% of the context limit, critical at 95%. Returns a proper 400 before Ollama Cloud's hard limit.</p>
+                </div>
+                <div class="feature-card">
+                    <span class="icon">📦</span>
+                    <h3>Adaptive Compression</h3>
+                    <p>When estimated tokens exceed 70% of the limit, automatically compresses: keeps system message, last N messages, and semantically similar messages.</p>
+                </div>
+                <div class="feature-card">
+                    <span class="icon">🔑</span>
+                    <h3>Prefix Caching</h3>
+                    <p>Content-addressed KV cache for the static prefix (system + initial exchanges). SHA-256 hashing. Logs hits and misses for observability.</p>
+                </div>
+                <div class="feature-card">
+                    <span class="icon">📈</span>
+                    <h3>Stats Endpoint</h3>
+                    <p><code>GET /stats</code> returns call count, total tokens, cache entries, prefix entries, compression count, and recent events.</p>
+                </div>
+                <div class="feature-card">
+                    <span class="icon">🔌</span>
+                    <h3>Zero Changes</h3>
+                    <p>Drop-in proxy — no modifications to your client code. Works with any OpenAI-compatible client. Single file, no heavy dependencies.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="quickstart">
+        <div class="container">
+            <h2>Quick Start</h2>
+            <div class="code-block">
+                <span class="comment"># Install</span><br>
+                pip install aiohttp pyyaml<br><br>
+                <span class="comment"># Start the proxy</span><br>
+                <span class="var">OLLAMA_API_KEY</span>=<span class="string">your_key_here</span> python ctxproxy.py<br><br>
+                <span class="comment"># Point your client to http://127.0.0.1:11438/v1</span><br>
+                <span class="comment"># For Hermes:</span><br>
+                hermes --provider ctxproxy
+            </div>
+            <div class="code-block">
+                <span class="comment"># Check stats</span><br>
+                curl http://127.0.0.1:11438/stats<br><br>
+                <span class="comment"># Response:</span><br>
+                {<br>
+                &nbsp;&nbsp;<span class="string">"calls"</span>: 42,<br>
+                &nbsp;&nbsp;<span class="string">"total_tokens"</span>: 147176,<br>
+                &nbsp;&nbsp;<span class="string">"cache_entries"</span>: 5,<br>
+                &nbsp;&nbsp;<span class="string">"prefix_entries"</span>: 3,<br>
+                &nbsp;&nbsp;<span class="string">"compressions"</span>: 1<br>
+                }
+            </div>
+        </div>
+    </section>
+
+    <section>
+        <div class="container">
+            <h2>Bugs Found & Fixed</h2>
+            <div class="bug-list">
+                <div class="bug-item">
+                    <h4>1. SQLite schema drift</h4>
+                    <p>Adding a <code>compressed</code> column to an existing DB caused a 500 error. Fixed with <code>CREATE TABLE IF NOT EXISTS</code> and migration checks.</p>
+                </div>
+                <div class="bug-item">
+                    <h4>2. <code>self.cache.db_path</code> vs <code>self.db_path</code></h4>
+                    <p>Copy-paste error from when ResponseCache was a property of CtxProxy. Fixed by using <code>self.db_path</code> directly.</p>
+                </div>
+                <div class="bug-item">
+                    <h4>3. Streaming breaks <code>resp.json()</code></h4>
+                    <p>SSE streams return <code>text/event-stream</code> — calling <code>resp.json()</code> fails. Fixed by checking <code>body.stream</code> before reading.</p>
+                </div>
+                <div class="bug-item">
+                    <h4>4. Port collision with local Ollama</h4>
+                    <p>Port 11435 was already used by a local Ollama GPU instance. Default changed to 11438.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section>
+        <div class="container">
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="number">330</div>
+                    <div class="label">Lines of Python</div>
+                </div>
+                <div class="stat-card">
+                    <div class="number">2</div>
+                    <div class="label">Dependencies</div>
+                </div>
+                <div class="stat-card">
+                    <div class="number">8</div>
+                    <div class="label">Unit Tests</div>
+                </div>
+                <div class="stat-card">
+                    <div class="number">MIT</div>
+                    <div class="label">License</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <footer class="footer">
+        <div class="container">
+            <p>ctxproxy by <a href="https://github.com/cotcollective">cotcollective</a> · MIT License · <a href="https://github.com/cotcollective/ctxproxy">GitHub</a></p>
+        </div>
+    </footer>
+</body>
+</html>
